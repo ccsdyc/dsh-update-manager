@@ -5,6 +5,19 @@ Keep a Changelog, and versions follow Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- The panel heading shows the plugin's version after its name. The Host reads it
+  from its own `package.json` and sends it with the list payload
+  (`runtime.pluginVersion`), so it never goes stale against the installed copy.
+
+### Changed
+
+- Package, directory, loader entry, client module id, data folders and docs
+  renamed from `dsh-version-manager` to `dsh-update-manager`: the npm name
+  belongs to an unrelated package. The Chinese panel name stays 版本管理, and the
+  HTTP routes stay under `/dsh-versions/`.
+
 ### Fixed
 
 - A restart that raced an upgrade no longer boots a half-written install. A
