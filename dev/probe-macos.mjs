@@ -188,18 +188,18 @@ check(
 check(
   'macOS log path is Library/Logs',
   restartLogPath({ platform: 'darwin', env: {}, homedir: '/Users/me' }) ===
-    '/Users/me/Library/Logs/dsh-version-manager/restart.log',
+    '/Users/me/Library/Logs/dsh-update-manager/restart.log',
   restartLogPath({ platform: 'darwin', env: {}, homedir: '/Users/me' }),
 )
 check(
   'DSH_HOME wins over the platform default',
   restartLogPath({ platform: 'darwin', env: { DSH_HOME: '/tmp/dsh' }, homedir: '/Users/me' }) ===
-    '/tmp/dsh/logs/dsh-version-manager-restart.log',
+    '/tmp/dsh/logs/dsh-update-manager-restart.log',
 )
 check(
   'Windows log path is unchanged',
   restartLogPath({ platform: 'win32', env: { LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local' }, homedir: 'C:\\Users\\me' }) ===
-    'C:\\Users\\me\\AppData\\Local\\dsh-version-manager\\restart.log',
+    'C:\\Users\\me\\AppData\\Local\\dsh-update-manager\\restart.log',
 )
 
 if (failures > 0) {

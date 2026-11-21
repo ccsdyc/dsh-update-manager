@@ -4,7 +4,7 @@ chcp 65001 >nul
 
 where node >nul 2>nul
 if errorlevel 1 (
-  echo [dsh-version-manager] Node.js was not found on PATH.
+  echo [dsh-update-manager] Node.js was not found on PATH.
   echo Install Node.js, or run: node install.mjs
   pause
   exit /b 1

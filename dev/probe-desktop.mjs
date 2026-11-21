@@ -40,7 +40,7 @@ try {
 // Release artifacts, if the repository publishes desktop builds.
 try {
   const response = await fetch('https://api.github.com/repos/deepseek-ai/deepseek-harness/releases/latest', {
-    headers: { accept: 'application/vnd.github+json', 'user-agent': 'dsh-version-manager-probe' },
+    headers: { accept: 'application/vnd.github+json', 'user-agent': 'dsh-update-manager-probe' },
   })
   console.log('github latest release:', response.status)
   if (response.ok) {

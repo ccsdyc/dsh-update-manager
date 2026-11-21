@@ -180,7 +180,7 @@ const entry = {
   }),
   metadata: {
     category: 'dev',
-    keywords: ['dsh', 'version-manager', 'upgrade', 'desktop', 'restart'],
+    keywords: ['dsh', 'update-manager', 'upgrade', 'desktop', 'restart'],
     labels: [],
     sortKeys: {},
   },

@@ -76,7 +76,7 @@ check('the redundant dsh.ico is gone', !existsSync(fileURLToPath(new URL('../ass
 const materialized = shortcutIconPath({ LOCALAPPDATA: 'C:\\Local' })
 check(
   'the shortcut icon materializes outside the sandboxed workspace',
-  materialized === 'C:\\Local\\dsh-version-manager\\shortcut.ico',
+  materialized === 'C:\\Local\\dsh-update-manager\\shortcut.ico',
   materialized,
 )
 

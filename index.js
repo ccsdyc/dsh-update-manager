@@ -1,5 +1,5 @@
 /**
- * Host half of the dsh version manager.
+ * Host half of the dsh update manager.
  *
  * Scans every npm cache root on this machine (`_npx` installs and the
  * `_cacache` content-addressable store), reports each dsh version found with
@@ -20,6 +20,19 @@ import { fileURLToPath } from 'node:url'
 
 /** Directory of this plugin, used for assets that travel with it. */
 const PLUGIN_ROOT = path.dirname(fileURLToPath(import.meta.url))
+
+/**
+ * The version this copy ships, read from its own manifest at load. Only the
+ * Host can see `package.json`, so the panel gets it through the list route.
+ */
+const PLUGIN_VERSION = (() => {
+  try {
+    const manifest = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
+    return typeof manifest?.version === 'string' && manifest.version !== '' ? manifest.version : null
+  } catch {
+    return null
+  }
+})()
 
 /** Route: scan every cache root and return the version inventory. */
 const ROUTE_LIST = '/dsh-versions/list'
@@ -43,8 +56,8 @@ const ROUTE_SHORTCUT = '/dsh-versions/shortcut'
 const ROUTE_TIP_QRCODE = '/dsh-versions/tip-qrcode'
 /** File name (without extension) of the launcher this plugin owns on the Desktop. */
 const SHORTCUT_NAME = 'DeepSeek Harness'
-/** Original shortcut icon shipped with this plugin; override with `DSH_VERSION_MANAGER_ICON`. */
-const SHORTCUT_ICON = process.env.DSH_VERSION_MANAGER_ICON ?? path.join(PLUGIN_ROOT, 'assets', 'tray.ico')
+/** Original shortcut icon shipped with this plugin; override with `DSH_UPDATE_MANAGER_ICON`. */
+const SHORTCUT_ICON = process.env.DSH_UPDATE_MANAGER_ICON ?? path.join(PLUGIN_ROOT, 'assets', 'tray.ico')
 /** Fixed official installer URLs; the file name carries no version. */
 const DESKTOP_DOWNLOADS = {
   'win32-x64': 'https://download.deepseek.com/desktop/dsh-latest-windows-x64.exe',
@@ -103,6 +116,11 @@ export function runtimeInfo(ctx) {
     version: BOOT_VERSION,
     pid: process.pid,
     canRestart: typeof exit === 'function' && process.versions?.electron === undefined,
+    // Shown after the page heading; null when the manifest is unreadable.
+    pluginVersion: PLUGIN_VERSION,
+    // An install owns the package directory until npm exits; the panel keeps
+    // restart disabled while this is set, even after a page reload.
+    upgrading: upgradingSnapshot(),
   }
 }
 
@@ -756,6 +774,15 @@ export async function registrySnapshot(force = true) {
 let upgrading = null
 
 /**
+ * The upgrade this process is running, or null. Exposed to the panel so a
+ * reloaded page still knows the install directory is owned by npm.
+ */
+export function upgradingSnapshot() {
+  if (upgrading === null) return null
+  return { target: upgrading.target, version: upgrading.version, startedAt: upgrading.startedAt }
+}
+
+/**
  * PATH for a spawned tool, with the running node's directory and the usual npm
  * install locations first. A desktop app launched from Finder on macOS does not
  * inherit the login shell's PATH, so `npm` installed by Homebrew or nvm is
@@ -906,15 +933,43 @@ let restarting = null
 const RESTART_GRACE_MS = 20000
 /** How long a freshly launched server must stay up before the helper accepts it. */
 const RESTART_PROBE_MS = 3000
-/** Launch attempts when the new server exits early (typically the port is not free yet). */
-const RESTART_ATTEMPTS = 4
+/**
+ * Delay after each failed launch attempt; the last entry repeats. A new server
+ * that exits inside the probe window is not necessarily broken — it may still
+ * be waiting for the port, or for `npm install --global` to finish writing the
+ * dependency tree — so the helper keeps retrying with growing gaps.
+ */
+const RESTART_BACKOFF_MS = [1000, 2000, 4000, 8000, 15000, 30000]
+/**
+ * Total launch window. A dependency tree that is still unpacking needs about
+ * this long on a slow registry: the 0.2.2-rc.5 install spent 61 s finishing
+ * after its launcher existed, so a short window gives up exactly when the
+ * install would have succeeded.
+ */
+const RESTART_BUDGET_MS = 120000
+
+/**
+ * Why a restart may not start now, or null when it may. An upgrade owns the
+ * install directory until `npm install --global` exits: restarting inside that
+ * window boots the half-written tree, which is how 0.2.2-rc.5 failed with
+ * `ERR_MODULE_NOT_FOUND` for `@deepseek-ai/dsh-app-boot`.
+ */
+export function restartRefusal(state = {}) {
+  const running = state.upgrading ?? null
+  if (running !== null) {
+    return { ok: false, error: 'upgrading', detail: `${String(running.target)}@${String(running.version)}` }
+  }
+  if ((state.restarting ?? null) !== null) return { ok: false, error: 'busy' }
+  return null
+}
 
 /**
  * Detached helper source: wait for this process to release the port, then start
  * the new install with the original command line. It runs outside this process
  * on purpose — the old server must be gone before the new one can bind.
  *
- * Arguments (after `-e`): old pid, cwd, log path, grace ms, probe ms, exe, argv...
+ * Arguments (after `-e`): old pid, cwd, log path, grace ms, probe ms,
+ * backoff ms (comma separated), budget ms, exe, argv...
  * Kept as plain CommonJS with string concatenation so nothing is interpolated.
  */
 const RESTART_HELPER = `
@@ -926,7 +981,9 @@ const cwd = args[1]
 const log = args[2]
 const graceMs = Number(args[3])
 const probeMs = Number(args[4])
-const command = args.slice(5)
+const backoff = String(args[5]).split(',').map(Number).filter((value) => Number.isFinite(value) && value >= 0)
+const budgetMs = Number(args[6])
+const command = args.slice(7)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const alive = () => { try { process.kill(oldPid, 0); return true } catch { return false } }
 const note = (text) => { try { fs.appendFileSync(log, '[' + new Date().toISOString() + '] ' + text + '\\n') } catch {} }
@@ -942,9 +999,12 @@ async function main() {
   await sleep(1000)
   let out = 'ignore'
   try { out = fs.openSync(log, 'a') } catch {}
-  for (let attempt = 1; attempt <= ${RESTART_ATTEMPTS}; attempt += 1) {
+  const launchStart = Date.now()
+  note('restart helper: launching for up to ' + budgetMs + ' ms with backoff ' + backoff.join('/'))
+  let failure = 'not started'
+  for (let attempt = 1; ; attempt += 1) {
     note('restart helper: launch attempt ' + attempt + ': ' + command.join(' '))
-    let child
+    let child = null
     try {
       child = spawn(command[0], command.slice(1), {
         cwd,
@@ -954,21 +1014,29 @@ async function main() {
         stdio: ['ignore', out, out],
       })
     } catch (error) {
-      note('restart helper: spawn failed: ' + String(error && error.message || error))
-      await sleep(1500)
-      continue
+      failure = 'spawn failed: ' + String(error && error.message || error)
+      note('restart helper: ' + failure)
     }
-    const outcome = await new Promise((resolve) => {
-      let settled = false
-      const finish = (value) => { if (!settled) { settled = true; clearTimeout(timer); resolve(value) } }
-      const timer = setTimeout(() => finish('running'), probeMs)
-      child.once('error', (error) => finish('error: ' + String(error && error.message || error)))
-      child.once('exit', (code) => finish('exit ' + code))
-    })
-    child.unref()
-    if (outcome === 'running' || outcome === 'exit 0') { note('restart helper: ' + outcome); break }
-    note('restart helper: ' + outcome)
-    await sleep(1500)
+    let outcome = failure
+    if (child !== null) {
+      outcome = await new Promise((resolve) => {
+        let settled = false
+        const finish = (value) => { if (!settled) { settled = true; clearTimeout(timer); resolve(value) } }
+        const timer = setTimeout(() => finish('running'), probeMs)
+        child.once('error', (error) => finish('error: ' + String(error && error.message || error)))
+        child.once('exit', (code) => finish('exit ' + code))
+      })
+      child.unref()
+      if (outcome === 'running' || outcome === 'exit 0') { note('restart helper: ' + outcome); break }
+      note('restart helper: ' + outcome)
+      failure = outcome
+    }
+    const delay = backoff.length === 0 ? 0 : backoff[Math.min(attempt - 1, backoff.length - 1)]
+    if (Date.now() - launchStart + delay > budgetMs) {
+      note('restart helper: giving up after ' + attempt + ' attempt(s), last outcome ' + failure)
+      break
+    }
+    if (delay > 0) await sleep(delay)
   }
   if (out !== 'ignore') { try { fs.closeSync(out) } catch {} }
   process.exit(0)
@@ -984,39 +1052,83 @@ export function restartLogPath(options = {}) {
   const p = platform === 'win32' ? path.win32 : path.posix
   const dshHome = env.DSH_HOME
   if (typeof dshHome === 'string' && dshHome !== '') {
-    return p.join(dshHome, 'logs', 'dsh-version-manager-restart.log')
+    return p.join(dshHome, 'logs', 'dsh-update-manager-restart.log')
   }
   if (platform === 'darwin') {
-    return p.join(home, 'Library', 'Logs', 'dsh-version-manager', 'restart.log')
+    return p.join(home, 'Library', 'Logs', 'dsh-update-manager', 'restart.log')
   }
   if (platform === 'win32') {
     const base = env.LOCALAPPDATA ?? p.join(home, 'AppData', 'Local')
-    return p.join(base, 'dsh-version-manager', 'restart.log')
+    return p.join(base, 'dsh-update-manager', 'restart.log')
   }
-  return p.join(home, '.local', 'state', 'dsh-version-manager', 'restart.log')
+  return p.join(home, '.local', 'state', 'dsh-update-manager', 'restart.log')
 }
 
-/** Start the detached helper; the returned child is already unreferenced. */
-export function spawnRestartHelper({ pid, cwd, log, command }) {
+/**
+ * Start the detached helper; the returned child is already unreferenced.
+ * `backoffMs`, `budgetMs` and `probeMs` exist for the probe; production uses
+ * the module constants.
+ */
+export function spawnRestartHelper({ pid, cwd, log, command, backoffMs, budgetMs, probeMs }) {
   // Tool-shell markers describe the old process's callers, not a fresh server.
   const env = { ...process.env }
   delete env.DSH_SESSION_ID
   delete env.DSH_SHELL
   delete env.DSH_WEB_URL
+  const backoff = Array.isArray(backoffMs)
+    ? backoffMs.map(Number).filter((value) => Number.isFinite(value) && value >= 0)
+    : RESTART_BACKOFF_MS
+  const budget = Number.isFinite(Number(budgetMs)) ? Math.max(0, Number(budgetMs)) : RESTART_BUDGET_MS
+  const probe = Number.isFinite(Number(probeMs)) ? Math.max(0, Number(probeMs)) : RESTART_PROBE_MS
   const child = spawn(
     process.execPath,
-    ['-e', RESTART_HELPER, String(pid), cwd, log, String(RESTART_GRACE_MS), String(RESTART_PROBE_MS), ...command],
+    [
+      '-e',
+      RESTART_HELPER,
+      String(pid),
+      cwd,
+      log,
+      String(RESTART_GRACE_MS),
+      String(probe),
+      backoff.join(','),
+      String(budget),
+      ...command,
+    ],
     { detached: true, stdio: 'ignore', windowsHide: true, env },
   )
   child.unref()
   return child
 }
 
-/** The install a restart on `version` would launch, or null when it is not installed. */
-export async function installedLaunchTarget(target, version) {
+/**
+ * Whether an install can boot: every runtime dependency its manifest declares
+ * already sits in `node_modules`. npm writes the package and its launcher
+ * before the dependency tree, so `lib/bin.js` alone says "installed" while
+ * `import('@deepseek-ai/dsh-app-boot')` still fails — the 0.2.2-rc.5 crash.
+ */
+export async function installComplete(directory) {
+  if (typeof directory !== 'string' || directory === '') return false
+  const manifest = await readJson(path.join(directory, 'package.json'))
+  if (manifest === null || typeof manifest !== 'object' || Array.isArray(manifest)) return false
+  const dependencies = manifest.dependencies
+  if (dependencies === null || typeof dependencies !== 'object' || Array.isArray(dependencies)) {
+    // Everything is installed relative to a manifest; without a name there is
+    // nothing to trust here.
+    return typeof manifest.name === 'string'
+  }
+  const modules = path.join(directory, 'node_modules')
+  const present = await mapLimit(Object.keys(dependencies), 16, async (name) =>
+    existsSync(path.join(modules, ...name.split('/'), 'package.json')),
+  )
+  return present.every(Boolean)
+}
+
+/** Every install of `version` that has a launcher script, newest first. */
+async function launchCandidates(target, version, options = {}) {
+  const candidates = []
   if (target === 'npx') {
-    const candidates = []
-    for (const root of npmCacheRoots().filter(isCacheRoot)) {
+    const roots = Array.isArray(options.cacheRoots) ? options.cacheRoots.map(String) : npmCacheRoots().filter(isCacheRoot)
+    for (const root of roots) {
       for (const install of await scanNpx(root, false)) {
         if (install.version !== version) continue
         const binPath = path.join(install.directory, 'node_modules', DSH, 'lib', 'bin.js')
@@ -1024,16 +1136,35 @@ export async function installedLaunchTarget(target, version) {
       }
     }
     candidates.sort((left, right) => right.mtime - left.mtime)
-    return candidates[0] ?? null
+    return candidates
   }
-  if (target === 'npm') {
-    for (const global of await scanGlobal()) {
-      if (global.version !== version) continue
-      const binPath = path.join(global.directory, 'lib', 'bin.js')
-      if (existsSync(binPath)) return { binPath, directory: global.directory, mtime: 0 }
-    }
+  if (target !== 'npm') return candidates
+  const scanGlobals = typeof options.scanGlobal === 'function' ? options.scanGlobal : scanGlobal
+  for (const global of await scanGlobals()) {
+    if (global.version !== version) continue
+    const binPath = path.join(global.directory, 'lib', 'bin.js')
+    if (existsSync(binPath)) candidates.push({ binPath, directory: global.directory, mtime: 0 })
   }
-  return null
+  return candidates
+}
+
+/**
+ * Resolve what a restart on `version` would launch. `install` is the first
+ * candidate whose dependency tree is complete; `incomplete` is a candidate
+ * that exists on disk but is still being written by npm. Exactly one is null.
+ */
+export async function locateLaunchTarget(target, version, options = {}) {
+  let incomplete = null
+  for (const candidate of await launchCandidates(target, version, options)) {
+    if (await installComplete(candidate.directory)) return { install: candidate, incomplete: null }
+    incomplete ??= candidate
+  }
+  return { install: null, incomplete }
+}
+
+/** The install a restart on `version` would launch, or null when none is usable. */
+export async function installedLaunchTarget(target, version, options = {}) {
+  return (await locateLaunchTarget(target, version, options)).install
 }
 
 /** Whether this argument list boots the browser profile (which reopens a tab by default). */
@@ -1049,16 +1180,23 @@ function selectsWebProfile(args) {
  * Build the command that starts `version` with this process's own launcher
  * arguments. The dsh script in argv[1] is replaced with the new install's
  * script; every other argument (profile, patches, app flags) is preserved.
+ * `options` carries injected scanners for the probe.
  */
-export async function restartPlan(request = {}, host = {}) {
+export async function restartPlan(request = {}, host = {}, options = {}) {
   const target = request.target === 'npm' ? 'npm' : request.target === 'npx' ? 'npx' : null
   if (target === null) return { ok: false, error: 'invalid-target' }
   const version = request.version
   if (typeof version !== 'string' || !SAFE_VERSION.test(version)) return { ok: false, error: 'invalid-version' }
   if (host.electron === true) return { ok: false, error: 'unsupported-host' }
 
-  const install = await installedLaunchTarget(target, version)
-  if (install === null) return { ok: false, error: 'not-installed', target, version }
+  const located = await locateLaunchTarget(target, version, options)
+  if (located.install === null) {
+    if (located.incomplete !== null) {
+      return { ok: false, error: 'install-incomplete', target, version, installDirectory: located.incomplete.directory }
+    }
+    return { ok: false, error: 'not-installed', target, version }
+  }
+  const install = located.install
 
   const argv = Array.isArray(host.argv) ? host.argv.map(String) : process.argv.slice()
   const entry = argv[1] ?? ''
@@ -1092,10 +1230,15 @@ export async function restartPlan(request = {}, host = {}) {
 /**
  * Restart the current process on an installed version: start the detached
  * helper, then hand back the exit request the route calls after it answers.
+ * `state` overrides the module's in-flight markers for the probe; production
+ * passes nothing.
  * @returns the public restart facts plus the composition's bounded exit.
  */
-export async function restartVersion(ctx, request = {}) {
-  if (restarting !== null) return { ok: false, error: 'busy' }
+export async function restartVersion(ctx, request = {}, state = {}) {
+  // An upgrade owns the install directory until npm exits; a restart inside
+  // that window boots a half-written tree.
+  const refusal = restartRefusal({ upgrading: state.upgrading ?? upgrading, restarting: state.restarting ?? restarting })
+  if (refusal !== null) return refusal
   const exit = ctx?.appExit ?? ctx?.get?.('appExit')
   if (typeof exit !== 'function') return { ok: false, error: 'unsupported-host' }
   const plan = await restartPlan(request, {
@@ -1764,7 +1907,7 @@ async function darwinShortcutCandidates({ launch, args, inventory, workingDirect
  * label, so the same bytes are copied under the user's AppData directory.
  */
 export function shortcutIconPath(env = process.env) {
-  return path.join(env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'), 'dsh-version-manager', 'shortcut.ico')
+  return path.join(env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'), 'dsh-update-manager', 'shortcut.ico')
 }
 
 /** Copy the shipped icon to a normal-integrity path; fall back to the source. */
@@ -2235,7 +2378,7 @@ export function apply(ctx) {
           }
         },
       }),
-    `dsh-version-manager: ${ROUTE_LIST}`,
+    `dsh-update-manager: ${ROUTE_LIST}`,
   )
 
   ctx.effect(
@@ -2277,7 +2420,7 @@ export function apply(ctx) {
           }
         },
       }),
-    `dsh-version-manager: ${ROUTE_SIZES}`,
+    `dsh-update-manager: ${ROUTE_SIZES}`,
   )
 
   ctx.effect(
@@ -2305,7 +2448,7 @@ export function apply(ctx) {
           }
         },
       }),
-    `dsh-version-manager: ${ROUTE_REGISTRY}`,
+    `dsh-update-manager: ${ROUTE_REGISTRY}`,
   )
 
   ctx.effect(
@@ -2348,7 +2491,7 @@ export function apply(ctx) {
           }
         },
       }),
-    `dsh-version-manager: ${ROUTE_UPGRADE}`,
+    `dsh-update-manager: ${ROUTE_UPGRADE}`,
   )
 
   ctx.effect(
@@ -2414,7 +2557,7 @@ export function apply(ctx) {
           }
         },
       }),
-    `dsh-version-manager: ${ROUTE_RESTART}`,
+    `dsh-update-manager: ${ROUTE_RESTART}`,
   )
 
   ctx.effect(
@@ -2460,7 +2603,7 @@ export function apply(ctx) {
           }
         },
       }),
-    `dsh-version-manager: ${ROUTE_DELETE}`,
+    `dsh-update-manager: ${ROUTE_DELETE}`,
   )
 
   ctx.effect(
@@ -2481,7 +2624,7 @@ export function apply(ctx) {
           }
         },
       }),
-    `dsh-version-manager: ${ROUTE_DESKTOP}`,
+    `dsh-update-manager: ${ROUTE_DESKTOP}`,
   )
 
   ctx.effect(
@@ -2524,7 +2667,7 @@ export function apply(ctx) {
           }
         },
       }),
-    `dsh-version-manager: ${ROUTE_DESKTOP_INSTALL}`,
+    `dsh-update-manager: ${ROUTE_DESKTOP_INSTALL}`,
   )
 
   ctx.effect(
@@ -2551,7 +2694,7 @@ export function apply(ctx) {
           }
         },
       }),
-    `dsh-version-manager: ${ROUTE_TIP_QRCODE}`,
+    `dsh-update-manager: ${ROUTE_TIP_QRCODE}`,
   )
 
   ctx.effect(
@@ -2573,6 +2716,6 @@ export function apply(ctx) {
           }
         },
       }),
-    `dsh-version-manager: ${ROUTE_SHORTCUT}`,
+    `dsh-update-manager: ${ROUTE_SHORTCUT}`,
   )
 }

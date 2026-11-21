@@ -1,4 +1,4 @@
-# dsh version manager
+# dsh update manager
 
 A Harness bundle that adds a **版本管理 / Versions** entry to the left navigation
 and a panel with three areas behind a segmented switcher. Only the open area is
@@ -90,10 +90,10 @@ installed bundle. A `.command` uses Terminal's icon; the app symlink keeps the
 app's own icon.
 
 On Windows the shortcut uses the original glossy `assets/tray.ico` shipped with
-this plugin (override with `DSH_VERSION_MANAGER_ICON`). It was rebuilt from the
+this plugin (override with `DSH_UPDATE_MANAGER_ICON`). It was rebuilt from the
 original `icon.png` / `tray.ico` artwork as a multi-size `.ico` (BMP frames plus
 a 256 px PNG). Before writing the `.lnk`, the Host copies those bytes to
-`%LOCALAPPDATA%\dsh-version-manager\shortcut.ico` and points `IconLocation`
+`%LOCALAPPDATA%\dsh-update-manager\shortcut.ico` and points `IconLocation`
 there: the packaged copy sits under the DSH workspace, whose low integrity label
 Explorer's shortcut icon extractor refuses, while the AppData copy renders. The
 plugin directory is resolved from its own module URL, so a copy of the plugin on
@@ -152,7 +152,7 @@ installer's `Content-Disposition` file name. A check runs when the plugin loads
 and then once at the top of every hour. Clicking the tab acknowledges the
 published version, clears its dot, and drops the sidebar `new` when no
 unacknowledged dot remains. Acknowledgements are kept in `localStorage` under
-`dsh-version-manager:dismissed`; a newer published version lights the dot again.
+`dsh-update-manager:dismissed`; a newer published version lights the dot again.
 The marker is one owned stylesheet keyed on the row's `aria-label`;
 install/uninstall actions re-run the check immediately.
 
@@ -200,6 +200,14 @@ Only one upgrade runs at a time, versions are validated against the registry
 before they reach a shell, and each install is bounded to 15 minutes. The
 response carries the command's output tail so failures are readable.
 
+An upgrade owns the install directory until `npm install --global` exits. `npm`
+writes the package and its launcher long before the dependency tree, so the
+Host refuses to restart while an upgrade is in flight (`error: 'upgrading'`)
+and refuses to launch a version whose `node_modules` still misses a declared
+dependency (`error: 'install-incomplete'`). The list route reports the install
+in progress as `runtime.upgrading`, so a page that was reloaded mid-install
+keeps restart and a second upgrade disabled and polls until it finishes.
+
 Upgrading the install this process runs from cannot take effect until the
 process restarts, so the panel asks for confirmation before such an upgrade and
 then restarts automatically. Upgrading the other area only installs a copy.
@@ -225,21 +233,24 @@ action switches to a newer install. The Host:
    is reported by a new PID — a same-version restart must not reload on the old
    server's reply. After two minutes the overlay shows the log path instead.
 
-The helper attempts the launch four times (a port still closing should not leave
-the machine without a server) and appends its messages plus the new server's
-output to `$DSH_HOME/logs/dsh-version-manager-restart.log` (macOS falls back to
-`~/Library/Logs/dsh-version-manager/`, Windows to
-`%LOCALAPPDATA%\dsh-version-manager\`). Sessions are
+The helper retries a launch that exits inside the probe window with growing
+gaps (1, 2, 4, 8, 15, then 30 s) for up to two minutes, so a port still closing
+or a dependency tree still unpacking does not leave the machine without a
+server, and appends its messages plus the new server's output to
+`$DSH_HOME/logs/dsh-update-manager-restart.log` (macOS falls back to
+`~/Library/Logs/dsh-update-manager/`, Windows to
+`%LOCALAPPDATA%\dsh-update-manager\`). When the budget is spent it logs
+`giving up` with the last outcome. Sessions are
 persisted, but agent turns and background jobs running at that moment are
 interrupted.
 
 ## Install from npm
 
-The package is published as `dsh-version-manager`. Use the plugin manager's
+The package is published as `dsh-update-manager`. Use the plugin manager's
 install action, or run:
 
 ```powershell
-dsh plugin --profile web add dsh-version-manager
+dsh plugin --profile web add dsh-update-manager
 ```
 
 If the CLI only adds the dependency, enable the bundle in the plugin manager
@@ -271,7 +282,8 @@ The Host half registers these routes on the composition's `webServer`
 `/dsh-versions/desktop`, `/dsh-versions/desktop/install`,
 `/dsh-versions/shortcut`, `/dsh-versions/tip-qrcode`), each behind
 `connection.requestRejection`. The Client half calls them with same-origin `fetch`. `/list` also carries `runtime`
-(kind, hash, booted version, PID, whether a restart is possible). The list is
+(kind, hash, booted version, PID, whether a restart is possible, and the upgrade
+in flight as `upgrading` — null when idle). The list is
 returned before install sizes are measured; sizes arrive in a second request so
 the panel paints in about a second even on a cold cache.
 
@@ -288,10 +300,10 @@ the npm `files` list; a zip is a folder copy, so both are available there.
 
 ### Zip / offline install
 
-Compress the `dsh-version-manager` folder with the folder itself at the zip
+Compress the `dsh-update-manager` folder with the folder itself at the zip
 root. On the target machine:
 
-1. Extract the folder anywhere, for example `D:\dsh\dsh-version-manager`.
+1. Extract the folder anywhere, for example `D:\dsh\dsh-update-manager`.
 2. Fully quit DSH.
 3. Windows: double-click `install.cmd`; macOS/Linux: `sh install.sh`.
 4. Restart DSH and refresh the page.
@@ -311,7 +323,7 @@ the folder in the target profile.
 ### Plugin market (npm source)
 
 DSH plugin market format 1 accepts npm and Git versions, not zip files. The
-package is published as `dsh-version-manager`; generate a self-hosted index
+package is published as `dsh-update-manager`; generate a self-hosted index
 whose source is npm:
 
 ```powershell
@@ -319,7 +331,7 @@ node tools/make-market-index.mjs --version 1.0.0 --out market/index.json
 ```
 
 The tool embeds `icon.svg` and the locale description and prints the
-`dsh-version-manager@1.0.0` install spec. Put `index.json` on an HTTPS static
+`dsh-update-manager@1.0.0` install spec. Put `index.json` on an HTTPS static
 host and add that URL under DSH's plugin-market index settings.
 
 For a commit-pinned Git release instead, add `--source git --repo
@@ -338,6 +350,11 @@ network access for the registry and desktop-installer features.
   rejects bad targets, unsafe version strings, and unpublished versions.
 - `dev/probe-restart.mjs` checks the booted-version read, the launch plan, and
   the detached helper against two throwaway HTTP servers.
+- `dev/probe-restart-guard.mjs` checks the guards that keep an upgrade and a
+  restart from racing: the refusal returned while an install runs, the
+  dependency-tree check that rejects a half-written install, the launch plan
+  for a finished install, the helper's backoff and give-up
+  budget, and the `runtime.upgrading` field plus locale keys the panel reads.
 - `dev/probe-shortcut.mjs` checks the shortcut arguments, profile retention, and
   the PowerShell/command invocation builders.
 - `dev/probe-macos.mjs` checks the macOS-only decisions on any host: global npm

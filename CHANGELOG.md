@@ -3,6 +3,32 @@
 All notable changes to this plugin are documented here. The format follows
 Keep a Changelog, and versions follow Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+
+- A restart that raced an upgrade no longer boots a half-written install. A
+  0.2.2-rc.5 upgrade failed to come back because `npm install --global` writes
+  the launcher before the dependency tree, so the relaunched process died with
+  `ERR_MODULE_NOT_FOUND` for `@deepseek-ai/dsh-app-boot` while npm was still
+  unpacking. `restartVersion` now refuses while an upgrade is in flight
+  (`error: 'upgrading'`), and `restartPlan` refuses a version whose declared
+  dependencies are not all on disk yet (`error: 'install-incomplete'`).
+- The panel keeps restart and upgrade disabled while the Host reports an
+  install it started (`runtime.upgrading`), including after a page reload, and
+  polls the list route until the install finishes instead of leaving a stale
+  "not upgrading" state.
+- The restart helper retries a failed launch with a growing backoff for up to
+  two minutes (1, 2, 4, 8, 15, then 30 s) instead of four attempts about twelve
+  seconds apart, and logs `giving up` when the budget is spent.
+- Confirming a delete or cache-clean dialog reached the delete route instead of
+  the upgrade route. `askDelete`/`askCleanAll` built the pending plan without
+  `kind`, so the dialog's confirm fell through to
+  `performUpgrade(undefined, undefined)` and the panel answered
+  `undefined 升级失败：invalid-target` for a request that carried no target at
+  all. Both plans now carry `kind: 'delete'`, and a probe clicks through the
+  dialog and asserts the delete route.
+
 ## [1.0.0] - 2026-11-07
 
 ### Added
@@ -28,7 +54,7 @@ Keep a Changelog, and versions follow Semantic Versioning.
 - The shortcut uses the original `assets/tray.ico`, rebuilt from the supplied
   `icon.png` / `tray.ico` artwork as a multi-size icon (BMP frames plus a
   256 px PNG). The redundant web-derived `assets/dsh.ico` is gone.
-- The Host copies the icon to `%LOCALAPPDATA%\dsh-version-manager\shortcut.ico`
+- The Host copies the icon to `%LOCALAPPDATA%\dsh-update-manager\shortcut.ico`
   before writing the shortcut. Explorer refuses icons carrying the workspace's
   low integrity label, so pointing `IconLocation` at the packaged file produced
   the generic white-page icon even though the file and `IconLocation` were valid.

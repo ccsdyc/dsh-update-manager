@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Offline installer for the DSH version manager.
+ * Offline installer for the DSH update manager.
  *
  * A zip is only transport: DSH itself installs plugins from a package name,
  * a local path, a Git URL, or a tarball. This script turns an extracted folder
@@ -26,12 +26,12 @@ const VERSION = PACKAGE.version
 const IS_WIN = process.platform === 'win32'
 
 function fail(message) {
-  console.error(`[dsh-version-manager] ${message}`)
+  console.error(`[dsh-update-manager] ${message}`)
   process.exit(1)
 }
 
 function note(message) {
-  console.log(`[dsh-version-manager] ${message}`)
+  console.log(`[dsh-update-manager] ${message}`)
 }
 
 function usage() {

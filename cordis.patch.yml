@@ -1,3 +1,3 @@
 - insert:
-    - id: dsh-version-manager
-      name: 'dsh-version-manager'
+    - id: dsh-update-manager
+      name: 'dsh-update-manager'

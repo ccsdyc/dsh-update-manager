@@ -1,5 +1,5 @@
 {
-  "name": "dsh-version-manager",
+  "name": "dsh-update-manager",
   "version": "1.0.0",
   "description": "DSH install management, automatic upgrades, desktop shortcuts, and quick restarts.",
   "type": "module",
@@ -18,7 +18,7 @@
     "dsh-plugin",
     "deepseek-harness",
     "cordis",
-    "version-manager",
+    "update-manager",
     "upgrade",
     "desktop",
     "restart"

@@ -1,20 +1,20 @@
 /**
- * Browser half of the version manager: one navigation entry in the sidebar
+ * Browser half of the update manager: one navigation entry in the sidebar
  * panel list and the page it opens. The page shows the npm (global) area and
  * the npx area, each with the newest rc and alpha published to the registry,
  * then the other installed npx versions. Upgrades and deletions are Host
  * operations reached over same-origin HTTP.
  *
- * @module dsh-version-manager/client
+ * @module dsh-update-manager/client
  */
 window.__ModuleLoader__.load({
-  id: 'dsh-version-manager',
+  id: 'dsh-update-manager',
   factory(require) {
     const React = require('react')
     const h = React.createElement
 
     /** Locale namespace registered with the Client locale service. */
-    const NS = 'dsh-version-manager'
+    const NS = 'dsh-update-manager'
     /** Sidebar panel id; the same value is the key of the `main` registration. */
     const PANEL_ID = 'dsh-versions'
     /** Host routes served by this package's Host half. */
@@ -113,6 +113,7 @@ window.__ModuleLoader__.load({
       'upgrade.dialogAutoRestart': '安装成功后将自动关闭旧服务并启动新版本。',
       'upgrade.dialogNoRestart': '安装完成后，可在需要时重启以使用该版本。',
       'upgrade.dialogWorking': '升级进行中…',
+      'upgrade.dialogHost': '安装由另一个页面发起，本页只显示进度；安装完成后才能重启或再次升级。',
       'restart.action': '重启到 {version}',
       'restart.now': '重启 DSH',
       'restart.nowTitle': '重启当前 DSH 服务？',
@@ -129,6 +130,8 @@ window.__ModuleLoader__.load({
       'restart.reload': '重新加载页面',
       'restart.requestFailed': '重启失败：{reason}',
       'restart.busy': '正在重启…',
+      'restart.upgrading': '正在安装 {version}，安装完成后才能重启。',
+      'restart.incomplete': '安装还没写完（依赖尚缺），已取消重启；等安装完成后再试。',
       'confirm.title': '确认删除 {version}？',
       'confirm.body': '将删除该版本的安装目录与相关缓存，释放约 {size}。此操作不可撤销。',
       'confirm.bodyNoSize': '将删除 {version} 的安装目录与相关缓存。此操作不可撤销。',
@@ -156,7 +159,7 @@ window.__ModuleLoader__.load({
 
     const en = {
       panel: 'Versions',
-      title: 'Version manager',
+      title: 'Update manager',
       subtitle: 'DSH install management, automatic upgrades, desktop shortcuts, and quick restarts.',
       refresh: 'Check again',
       'lang.switch': '中文',
@@ -230,6 +233,7 @@ window.__ModuleLoader__.load({
       'upgrade.dialogAutoRestart': 'When the install finishes, the old service closes and the new version starts automatically.',
       'upgrade.dialogNoRestart': 'Once installed, restart whenever you want to use this version.',
       'upgrade.dialogWorking': 'Upgrade in progress…',
+      'upgrade.dialogHost': 'Another page started this install; this page only shows its progress. Restart and upgrade stay disabled until it finishes.',
       'restart.action': 'Restart on {version}',
       'restart.now': 'Restart dsh',
       'restart.nowTitle': 'Restart the current dsh service?',
@@ -246,6 +250,8 @@ window.__ModuleLoader__.load({
       'restart.reload': 'Reload page',
       'restart.requestFailed': 'Restart failed: {reason}',
       'restart.busy': 'Restarting…',
+      'restart.upgrading': 'Installing {version}; a restart is only possible once it finishes.',
+      'restart.incomplete': 'The install is still being written (dependencies are missing), so the restart was cancelled. Try again when it finishes.',
       'confirm.title': 'Delete {version}?',
       'confirm.body': 'This removes the install directory and its cache entries, releasing about {size}. It cannot be undone.',
       'confirm.bodyNoSize': 'This removes the install directory and its cache entries for {version}. It cannot be undone.',
@@ -279,6 +285,7 @@ window.__ModuleLoader__.load({
 .dshvm-mark { flex: none; width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-brand-primary); }
 .dshvm-heading { min-width: 0; }
 .dshvm-heading h1 { margin: 0; font-size: 17px; line-height: 22px; font-weight: 600; }
+.dshvm-heading-version { font-size: 12px; font-weight: 500; color: var(--dsw-alias-label-secondary); }
 .dshvm-heading p { margin: 4px 0 0; font-size: 12.5px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
 .dshvm-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 .dshvm-toolbar-sep { flex: none; width: 1px; height: 18px; background: var(--dsw-alias-border-l1); margin: 0 3px; }
@@ -425,7 +432,7 @@ window.__ModuleLoader__.load({
     /* --------------------------------------------------------------------- */
 
     /** Manual choice outranks the time zone and survives restarts. */
-    const LANGUAGE_KEY = 'dsh-version-manager:language'
+    const LANGUAGE_KEY = 'dsh-update-manager:language'
     /** IANA zones that belong to mainland China; Hong Kong and Macau default to English. */
     const CHINA_ZONES = new Set([
       'Asia/Shanghai',
@@ -529,7 +536,7 @@ window.__ModuleLoader__.load({
     }
 
     /** Acknowledged updates survive reloads and expire when a newer version appears. */
-    const UPDATE_DISMISS_KEY = 'dsh-version-manager:dismissed'
+    const UPDATE_DISMISS_KEY = 'dsh-update-manager:dismissed'
 
     /** Read the acknowledged updates; malformed or unavailable storage means none. */
     function loadDismissedUpdates() {
@@ -637,6 +644,18 @@ window.__ModuleLoader__.load({
         throw error
       }
       return payload
+    }
+
+    /**
+     * Turn a Host restart refusal into a sentence. `upgrading` and
+     * `install-incomplete` mean npm still owns the install directory, so a
+     * launcher started now would boot a half-written dependency tree.
+     */
+    function restartReasonText(reason, t, version) {
+      if (reason === 'upgrading') return t('restart.upgrading', { version })
+      if (reason === 'install-incomplete') return t('restart.incomplete')
+      if (reason === 'busy') return t('restart.busy')
+      return reason
     }
 
     /** Fold measured install sizes into the inventory the page already shows. */
@@ -1180,9 +1199,10 @@ window.__ModuleLoader__.load({
             waitForRestart(version, log, previousPid)
           } catch (error) {
             setBusy(null)
+            const reason = String(error?.payload?.error ?? error?.message ?? error)
             setNotice({
               kind: 'error',
-              text: t('restart.requestFailed', { reason: String(error?.payload?.error ?? error?.message ?? error) }),
+              text: t('restart.requestFailed', { reason: restartReasonText(reason, t, version) }),
             })
             // The install may still have succeeded; show it and its restart action.
             await load()
@@ -1373,6 +1393,44 @@ window.__ModuleLoader__.load({
             ? npxRunning
             : null
       const runtimeCanRestart = runtime?.canRestart === true
+      /** The plugin's own version, read by the Host from its package.json. */
+      const pluginVersion =
+        typeof runtime?.pluginVersion === 'string' && runtime.pluginVersion !== '' ? runtime.pluginVersion : null
+
+      // A reloaded page loses the local busy state, but the Host keeps
+      // reporting the install it is running: rebuilding the busy entry from it
+      // blocks restart and a second upgrade until npm exits.
+      const hostUpgrade = runtime?.upgrading ?? null
+      const hostUpgrading = hostUpgrade !== null
+      const actionBusy =
+        busy ??
+        (hostUpgrade === null
+          ? null
+          : {
+              kind: 'upgrade',
+              key: `${hostUpgrade.target}:${hostUpgrade.version}`,
+              target: hostUpgrade.target,
+              version: hostUpgrade.version,
+              restart: true,
+              host: true,
+            })
+
+      // Poll the Host while it installs so this page unblocks by itself, even
+      // when the install was started from a page that has since been closed.
+      React.useEffect(() => {
+        if (!hostUpgrading) return undefined
+        const timer = window.setInterval(async () => {
+          try {
+            const data = await requestJson(LIST_URL, { method: 'GET' })
+            setInventory(data)
+            void measureSizes(data)
+          } catch {
+            /* the Host is still busy; the next tick retries */
+          }
+        }, 5000)
+        return () => window.clearInterval(timer)
+      }, [hostUpgrading])
+
       const runningNewest = runningKind === 'npm' ? npmCurrent : runningKind === 'npx' ? npxCurrent : null
       const restartTarget =
         runtimeCanRestart &&
@@ -1455,6 +1513,7 @@ window.__ModuleLoader__.load({
 
       const askDelete = (row) =>
         setPending({
+          kind: 'delete',
           mode: row.installed ? 'version' : 'cache',
           versions: [row.version],
           title: row.installed ? t('confirm.title', { version: row.version }) : t('confirm.cleanTitle'),
@@ -1468,6 +1527,7 @@ window.__ModuleLoader__.load({
 
       const askCleanAll = () =>
         setPending({
+          kind: 'delete',
           mode: 'cache',
           versions: orphans.map((row) => row.version),
           title: t('confirm.cleanTitle'),
@@ -1498,7 +1558,7 @@ window.__ModuleLoader__.load({
             'header',
             { className: 'dshvm-header' },
             h('div', { className: 'dshvm-mark' }, h(LayersIcon, { size: 18 })),
-            h('div', { className: 'dshvm-heading' }, h('h1', null, t('title')), h('p', null, t('subtitle'))),
+            h('div', { className: 'dshvm-heading' }, h('h1', null, t('title'), pluginVersion === null ? null : [' ', h('span', { className: 'dshvm-heading-version' }, pluginVersion)]), h('p', null, t('subtitle'))),
           ),
 
           // The action row sits under the title so the heading keeps its own line.
@@ -1511,7 +1571,7 @@ window.__ModuleLoader__.load({
                 type: 'button',
                 className: 'dshvm-btn',
                 onClick: () => load({ force: true }),
-                disabled: refreshing || busy !== null,
+                disabled: refreshing || actionBusy !== null,
               },
               refreshing ? t('loading') : t('refresh'),
             ),
@@ -1532,7 +1592,7 @@ window.__ModuleLoader__.load({
                 type: 'button',
                 className: 'dshvm-btn',
                 title: runtimeCanRestart ? t('restart.nowHint') : t('restart.unsupported'),
-                disabled: !runtimeCanRestart || runningKind === null || runningVersion === null || busy !== null,
+                disabled: !runtimeCanRestart || runningKind === null || runningVersion === null || actionBusy !== null,
                 onClick: () => {
                   if (!runtimeCanRestart || runningKind === null || runningVersion === null) return
                   setPending({
@@ -1600,7 +1660,7 @@ window.__ModuleLoader__.load({
                         {
                           type: 'button',
                           className: 'dshvm-btn dshvm-btn-primary dshvm-status-action',
-                          disabled: busy !== null,
+                          disabled: actionBusy !== null,
                           onClick: () =>
                             setPending({
                               kind: 'restart',
@@ -1635,7 +1695,7 @@ window.__ModuleLoader__.load({
                                 area: 'npm',
                                 versions: npmVersions,
                                 running: [],
-                                busy,
+                                busy: actionBusy,
                                 onUpgrade: runUpgrade,
                                 t,
                               }),
@@ -1663,7 +1723,7 @@ window.__ModuleLoader__.load({
                                 area: 'npx',
                                 versions: npxVersions,
                                 running: runningVersions,
-                                busy,
+                                busy: actionBusy,
                                 onUpgrade: runUpgrade,
                                 t,
                               }),
@@ -1676,7 +1736,7 @@ window.__ModuleLoader__.load({
                         orphans.length > 0
                           ? h(
                               'button',
-                              { type: 'button', className: 'dshvm-btn', onClick: askCleanAll, disabled: busy !== null },
+                              { type: 'button', className: 'dshvm-btn', onClick: askCleanAll, disabled: actionBusy !== null },
                               t('action.cleanAll'),
                             )
                           : null,
@@ -1686,7 +1746,7 @@ window.__ModuleLoader__.load({
                         : h(
                             'div',
                             { className: 'dshvm-list' },
-                            otherRows.map((row) => h(VersionRow, { key: row.version, row, t, busy: busy !== null, onDelete: askDelete })),
+                            otherRows.map((row) => h(VersionRow, { key: row.version, row, t, busy: actionBusy !== null, onDelete: askDelete })),
                           ),
                     )
                   : null,
@@ -1758,12 +1818,16 @@ window.__ModuleLoader__.load({
               },
             }),
 
-        busy !== null && busy.kind === 'upgrade'
+        actionBusy !== null && actionBusy.kind === 'upgrade'
           ? h(ProgressDialog, {
-              title: t('upgrade.dialogTitle', { version: busy.version }),
+              title: t('upgrade.dialogTitle', { version: actionBusy.version }),
               lines: [
                 t('upgrade.dialogBody'),
-                busy.restart === true ? t('upgrade.dialogAutoRestart') : t('upgrade.dialogNoRestart'),
+                actionBusy.host === true
+                  ? t('upgrade.dialogHost')
+                  : actionBusy.restart === true
+                    ? t('upgrade.dialogAutoRestart')
+                    : t('upgrade.dialogNoRestart'),
               ],
               status: t('upgrade.dialogWorking'),
             })
@@ -1792,7 +1856,7 @@ window.__ModuleLoader__.load({
           sidebarDispose?.()
           sidebarDispose = sidebarRegister()
         } catch (error) {
-          console.error('dsh-version-manager: sidebar label refresh failed', error)
+          console.error('dsh-update-manager: sidebar label refresh failed', error)
         }
       }
       refreshSidebarLabel = refreshSidebar
@@ -1803,11 +1867,11 @@ window.__ModuleLoader__.load({
         if (visible && badgeDispose === null) {
           badgeDispose = ctx.effect(() => {
             const element = document.createElement('style')
-            element.dataset.dshVersionManager = 'new-badge'
+            element.dataset.dshUpdateManager = 'new-badge'
             element.textContent = badgeCss()
             document.head.appendChild(element)
             return () => element.remove()
-          }, 'dsh-version-manager: new badge')
+          }, 'dsh-update-manager: new badge')
         } else if (!visible && badgeDispose !== null) {
           badgeDispose()
           badgeDispose = null
@@ -1859,7 +1923,7 @@ window.__ModuleLoader__.load({
         return () => {
           updateState.listeners.delete(listener)
         }
-      }, 'dsh-version-manager: update marker state')
+      }, 'dsh-update-manager: update marker state')
 
       // Background update check: keeps the red `new` marker honest without
       // opening the panel. Failures simply leave the marker off.
@@ -1901,7 +1965,7 @@ window.__ModuleLoader__.load({
           recheckUpdates = null
           setBadge(false)
         }
-      }, 'dsh-version-manager: update check')
+      }, 'dsh-update-manager: update check')
     }
 
     return { inject: ['slots'], apply }
