@@ -3,6 +3,28 @@
 All notable changes to this plugin are documented here. The format follows
 Keep a Changelog, and versions follow Semantic Versioning.
 
+## [1.2.0] - 2026-11-27
+
+### Added
+
+- Support for DSH 0.2.3-alpha.1 and newer. That release removed
+  `connection.requestRejection` and moved route admission into the WebServer's
+  dispatch (`webserver/authorize` → `connection.admit`), so `apply` now chooses
+  the fence once at load: it calls `connection.requestRejection` where that
+  method exists, and skips the fence where the WebServer already admitted the
+  request. Nothing changes on 0.2.0-rc.2 through 0.2.2-rc.5, which still expose
+  the method.
+
+### Fixed
+
+- On DSH 0.2.3-alpha.1 and 0.2.3-alpha.2 every `/dsh-versions/*` route answered
+  `400` with an empty body, so the panel reported `Scan failed: HTTP 400` on
+  every reload: `rejected()` called the removed `connection.requestRejection`
+  and threw a `TypeError` before any handler logic. The same throw also hid a
+  successful restart — the page polls `/dsh-versions/list` to confirm the new
+  process, never saw a reply, and reported the restart as failed after two
+  minutes even though the relaunch had come up on the target version.
+
 ## [1.1.0] - 2026-11-21
 
 ### Added

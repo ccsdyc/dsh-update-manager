@@ -208,10 +208,25 @@ dsh plugin --profile web add dsh-update-manager
 Host 半边把下列路由注册到组合的 `webServer` 上（`/dsh-versions/list`、`/dsh-versions/sizes`、
 `/dsh-versions/registry`、`/dsh-versions/upgrade`、`/dsh-versions/restart`、
 `/dsh-versions/delete`、`/dsh-versions/desktop`、`/dsh-versions/desktop/install`、
-`/dsh-versions/shortcut`、`/dsh-versions/tip-qrcode`），每个都在 `connection.requestRejection` 之
-后。Client 半边用同源 `fetch` 调用它们。`/list` 还带 `runtime`（类型、hash、启动时加载的版本、PID、
-是否支持重启，以及正在进行的升级 `upgrading`——空闲时为 null）。列表在测量安装体积之前就返回；
-体积由第二个请求补齐，所以即使缓存是冷的，面板也能在一秒左右画出来。
+`/dsh-versions/shortcut`、`/dsh-versions/tip-qrcode`），每个都在载体的信任准入之后（见
+[DSH 版本支持](#dsh-版本支持)）。Client 半边用同源 `fetch` 调用它们。`/list` 还带 `runtime`
+（类型、hash、启动时加载的版本、PID、是否支持重启，以及正在进行的升级 `upgrading`——空闲时为
+null）。列表在测量安装体积之前就返回；体积由第二个请求补齐，所以即使缓存是冷的，面板也能在
+一秒左右画出来。
+
+## DSH 版本支持
+
+载体的准入口在加载时按运行中的 DSH 暴露的形态选定一次：
+
+| DSH 版本 | 路由准入 | 插件行为 |
+|---|---|---|
+| 0.2.0-rc.2 – 0.2.2-rc.5 | 路由 handler 调用 `connection.requestRejection`，它返回状态码或 `undefined` | 在任何处理逻辑之前调用它——与 1.1.0 完全相同的代码路径 |
+| 0.2.3-alpha.1 及更新 | WebServer 在派发前完成准入（`webserver/authorize` → `connection.admit`）；`requestRejection` 已移除 | 跳过 fence；handler 只会看到已准入的请求 |
+
+两条分支都对照过 npm 上的发布包：在 `@deepseek-ai/dsh-client-connection` 里，0.2.0-rc.2、
+0.2.1-rc.5、0.2.2-rc.5 的 `requestRejection` 契约一致（状态码或 `undefined`），到
+0.2.3-alpha.1 被移除并改为注册 `webserver/authorize`——所以这次断裂属于 **0.2.3-alpha.1**，
+不是 0.2.3-alpha.2。两种方法都不存在的载体则在没有 fence 的情况下运行，而不是回 400。
 
 ## 打包与可移植性
 
@@ -246,10 +261,10 @@ DSH 插件市场格式 1 接受 npm 与 Git 版本，不接受 zip。包名是 `
 为源的自托管索引：
 
 ```powershell
-node tools/make-market-index.mjs --version 1.1.0 --out market/index.json
+node tools/make-market-index.mjs --version 1.2.0 --out market/index.json
 ```
 
-该工具会内嵌 `icon.svg` 和 locale 描述，并打印 `dsh-update-manager@1.1.0` 的安装 spec。把
+该工具会内嵌 `icon.svg` 和 locale 描述，并打印 `dsh-update-manager@1.2.0` 的安装 spec。把
 `index.json` 放到 HTTPS 静态主机上，再把该 URL 加到 DSH 的插件市场索引设置里。
 
 若要用固定 commit 的 Git 发布，改为 `--source git --repo

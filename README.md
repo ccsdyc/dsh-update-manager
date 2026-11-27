@@ -282,12 +282,29 @@ The Host half registers these routes on the composition's `webServer`
 (`/dsh-versions/list`, `/dsh-versions/sizes`, `/dsh-versions/registry`,
 `/dsh-versions/upgrade`, `/dsh-versions/restart`, `/dsh-versions/delete`,
 `/dsh-versions/desktop`, `/dsh-versions/desktop/install`,
-`/dsh-versions/shortcut`, `/dsh-versions/tip-qrcode`), each behind
-`connection.requestRejection`. The Client half calls them with same-origin `fetch`. `/list` also carries `runtime`
+`/dsh-versions/shortcut`, `/dsh-versions/tip-qrcode`), each behind the carrier's
+trust fence (see [DSH versions](#dsh-versions)). The Client half calls them with
+same-origin `fetch`. `/list` also carries `runtime`
 (kind, hash, booted version, PID, whether a restart is possible, and the upgrade
 in flight as `upgrading` — null when idle). The list is
 returned before install sizes are measured; sizes arrive in a second request so
 the panel paints in about a second even on a cold cache.
+
+## DSH versions
+
+The fence is chosen once at load from the shape the running DSH exposes:
+
+| DSH release | Route admission | What the plugin does |
+|---|---|---|
+| 0.2.0-rc.2 – 0.2.2-rc.5 | the route handler calls `connection.requestRejection`, which returns a status or `undefined` | calls it before any handler logic — the same code path as 1.1.0 |
+| 0.2.3-alpha.1 and newer | the WebServer admits before dispatch (`webserver/authorize` → `connection.admit`); `requestRejection` is gone | skips the fence; a handler only sees admitted requests |
+
+Both branches were checked against the published packages: in
+`@deepseek-ai/dsh-client-connection`, `requestRejection` exists with the same
+status-or-`undefined` contract in 0.2.0-rc.2, 0.2.1-rc.5 and 0.2.2-rc.5, and
+0.2.3-alpha.1 removes it and registers `webserver/authorize` instead — the break
+belongs to **0.2.3-alpha.1**, not 0.2.3-alpha.2. A carrier exposing neither
+method runs without the fence instead of answering 400.
 
 ## Packaging and portability
 
@@ -330,11 +347,11 @@ package is published as `dsh-update-manager`; generate a self-hosted index
 whose source is npm:
 
 ```powershell
-node tools/make-market-index.mjs --version 1.1.0 --out market/index.json
+node tools/make-market-index.mjs --version 1.2.0 --out market/index.json
 ```
 
 The tool embeds `icon.svg` and the locale description and prints the
-`dsh-update-manager@1.1.0` install spec. Put `index.json` on an HTTPS static
+`dsh-update-manager@1.2.0` install spec. Put `index.json` on an HTTPS static
 host and add that URL under DSH's plugin-market index settings.
 
 For a commit-pinned Git release instead, add `--source git --repo

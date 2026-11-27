@@ -2351,8 +2351,19 @@ export const inject = ['webServer', 'connection']
 /** Register the scan and delete routes. */
 export function apply(ctx) {
   const connection = ctx.connection
+  /**
+   * The trust fence belongs to the carrier, and its shape changed once:
+   * DSH up to 0.2.2 exposes `connection.requestRejection` for the route to
+   * call, while 0.2.3-alpha.1 removed that method and moved admission into the
+   * WebServer's dispatch (`webserver/authorize` → `connection.admit`), so a
+   * handler only ever sees an already-admitted request. Call the fence where
+   * it exists and skip it where the WebServer already ran it — calling a
+   * removed method throws, and that throw surfaces as HTTP 400, not 500.
+   */
+  const fence =
+    typeof connection.requestRejection === 'function' ? connection.requestRejection.bind(connection) : null
   const rejected = (request, response) => {
-    const rejection = connection.requestRejection(request)
+    const rejection = fence === null ? undefined : fence(request)
     if (rejection === undefined) return false
     response.statusCode = rejection
     response.end()
